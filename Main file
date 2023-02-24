@@ -1,0 +1,560 @@
+#include <string.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <sys/time.h>
+#include <netdb.h>
+
+/* variáveis globais */
+char j[3]; // nó atual do terminal
+char j_pred[3]; // predecessor do terminal
+char j_suc[3]; // sucessor do terminal
+char IP[128]; // IP atual
+char IP_suc[128]; // IP sucessor
+char IP_pred[128]; // IP predecessor
+char PORT[6]; //PORT atual
+char PORT_pred[6]; // PORT do predecessor
+char PORT_suc[6]; // PORT do sucessor
+int fd[2]; /* fd[0]= pred fd[1]= suc */
+
+/*
+Função que devolve o modo que o utilizador
+escolheu no terminal
+Argumento de entrada: string buffer
+Retorno: Número indicativo de cada modo
+*/
+int verificamodo(const char buffer[])
+{
+    int modo=-1;
+
+    if (strncmp(buffer, "n", 1) == 0 || strncmp(buffer, "new", 3) == 0) return modo= 0;
+    else if (strncmp(buffer, "p", 1) == 0 || strncmp(buffer, "pentry", 6) == 0) return modo= 1;
+    else if (strncmp(buffer, "s", 1) == 0 || strncmp(buffer, "show", 4) == 0) return modo=2;
+    else if (strncmp(buffer, "l", 1) == 0 || strncmp(buffer, "leave", 5) == 0) return modo=3;
+    else if (strncmp(buffer, "e", 1) == 0 || strncmp(buffer, "exit", 4) == 0) return modo=4;
+    return modo;
+}
+/*
+Função que lê informação vinda de uma ligação TCP
+Argumentos de entrada: fd da ligação em questão 
+e apontador para string do buffer
+Argumento de saída: 1 em caso de sucesso e total leitura, 0 c.c
+*/
+
+int read_TCP(int tcp_fd, char* buffer) {
+
+    ssize_t nread;
+    ssize_t totalread = 0;
+    int flag = 0;
+
+    while (!flag) {
+        nread = read(tcp_fd, buffer, 20);
+        totalread += nread;
+        if (nread == -1) exit(1);
+        else if (nread == 0) { 
+            if (fd[0] == tcp_fd){ close(fd[0]); fd[0] = -1;}
+            else if (fd[1] == tcp_fd) {close(fd[1]); fd[1]=-1;}
+            return 0;
+        }
+        else if (buffer[nread - 1] == '\n') flag = 1; //chegamos ao fim
+        buffer += nread;
+    }
+
+    return 1;
+
+}
+/*
+Função que verifica inserções inválidas por parte
+do utilizador
+Argumento de entrada: apontador para string que contém
+a chave do nó e outro para o seu PORTO
+Sem retorno
+*/
+void verifica(char* checkkey, char* PORT)
+{
+    int check= atoi(checkkey);
+    if (check<0 || check>32 || strlen(PORT)>6)
+    {
+        printf("Inserção inválida, tente de novo\n");exit(1);
+    }
+}
+/* Função que cria ligação TCP com um determinado IP
+e PORTO
+Argumentos de entrada: Apontador para essas duas strings correspondentes
+Retorna: fd da ligação criada 
+*/
+
+int criaTCP(char* IP, char* PORT) {
+
+    int fd_tcp;
+    int errcode;  
+    struct addrinfo hints;  
+    struct addrinfo *res;
+
+    fd_tcp = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd_tcp == -1) exit(1);
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+
+    errcode = getaddrinfo(IP, PORT, &hints, &res);
+    if (errcode != 0) exit(1);
+
+    if (connect(fd_tcp, res->ai_addr, res->ai_addrlen) == -1) exit(1);
+
+    freeaddrinfo(res);
+
+    return fd_tcp;  
+}
+
+
+/* Função para receber conteúdo do buffer
+Argumento de entrada: string buffer
+Sem retorno */
+void read_buffer(const char buffer[])
+{
+    sscanf(buffer, "%*[^ ] %s %s %s\n", j_pred, IP_pred, PORT_pred);
+}
+
+
+int main(int argc, char *argv[])
+{
+    fd_set fds;
+    int fd_tcp;
+    int errcode;  
+    struct addrinfo hints;  
+    socklen_t addrlen;  
+    struct sockaddr addr;  
+
+    for (int i=0; i<2; i++)
+    {
+        fd[i]=-1;
+    }
+    verifica(argv[1], argv[3]);
+    /* Recolher info do terminal, depois de verificados os erros */
+    strcpy(j, argv[1]);
+    strcpy(IP, argv[2]);
+    strcpy(PORT, argv[3]);
+    strcpy(j_suc, argv[1]);
+    strcpy(IP_suc, argv[2]);
+    strcpy(PORT_suc, argv[3]);
+    strcpy(j_pred, argv[1]);
+    strcpy(IP_pred, argv[2]);
+    strcpy(PORT_pred, argv[3]);
+  
+    struct addrinfo* res_tcp;
+
+    fd_tcp = socket(AF_INET, SOCK_STREAM, 0); //SOCKET TCP
+    if (fd_tcp == -1) exit(1);
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+
+    errcode = getaddrinfo(NULL, PORT, &hints, &res_tcp);
+    if (errcode != 0) exit(1);
+
+    int err = bind(fd_tcp, res_tcp->ai_addr, res_tcp->ai_addrlen);
+    if (err != 0) exit(1);
+
+    if (listen(fd_tcp, 5) == -1) exit(1);
+
+    /* Menu inicial */
+
+    printf("Escolha uma das opções:\n");
+    printf("n(ew)\n");
+    printf("p(entry) i i.IP\n");
+    printf("s(how)\n");
+    printf("l(eave)\n");
+    printf("e(xit)\n");
+
+    while(1) {
+
+        FD_ZERO(&fds);
+        FD_SET(0, &fds); 
+        FD_SET(fd_tcp, &fds);
+        if (fd[1] != -1) FD_SET(fd[1], &fds);
+        if (fd[0] != -1) FD_SET(fd[0], &fds);      
+
+        int state = select(FD_SETSIZE, &fds, (fd_set *) NULL, (fd_set *) NULL,( struct timeval* )NULL);
+
+        bzero(&addr, sizeof(struct sockaddr));
+        addrlen = sizeof addr;
+        switch (state) {
+
+            case 0:
+                exit(0);
+
+            case -1:
+                exit(0);
+
+            default:
+                if (FD_ISSET(0, &fds)) { 
+
+                    char buffer[128] = {0};
+                    if (fgets(buffer, 128, stdin) == NULL) exit(1);
+
+                    int modo=verificamodo(buffer);
+
+                    if (modo==0){ printf("Novo anel formado\n");} //new
+
+                    else if (modo==1) /* pentry */
+                    {
+                        char ptr[200];
+                        read_buffer(buffer);
+                        verifica(j_pred, PORT_pred);
+                        sprintf(ptr, "SELF %s %s %s\n", j, IP, PORT); /* self j a j_pred */
+                        int tcp_pentry=criaTCP(IP_pred, PORT_pred);
+                        fd[0]= tcp_pentry;
+
+                        ssize_t nleft, nwritten;
+                        nleft = (ssize_t) strlen(ptr);
+
+                        char* tmp_ptr = ptr;
+                        while (nleft > 0) {
+                            nwritten = write(tcp_pentry, tmp_ptr, nleft);
+                            if (nwritten <= 0) return -1; 
+                            nleft -= nwritten;
+                            tmp_ptr += nwritten;
+                        }
+                        printf("Pentry efetuado\n");
+                    }
+                    else if(modo==2) // show 
+                    {
+                        printf("Nó atual: %s \n", j);
+                        printf("IP: %s\n", IP);
+                        printf("Porto: %s\n", PORT);
+                        printf("Nó sucessor: %s\n", j_suc);
+                        printf("IP do sucessor: %s\n", IP_suc);
+                        printf("Porto do sucessor: %s\n", PORT_suc);
+                        printf("Nó predecessor: %s\n", j_pred);
+                        printf("IP do predecessor: %s\n", IP_pred);
+                        printf("Porto do predecessor: %s\n", PORT_pred);
+
+                    }
+                    else if (modo== 3) // leave
+                    {
+                        char pred[200];
+                        sprintf(pred, "PRED %s %s %s\n", j_pred, IP_pred, PORT_pred); // informar sucessor da saída e do novo pred
+                        char* tmp_ptr = pred;
+                        
+                        ssize_t nleft, nwritten;
+                        nleft = (ssize_t) strlen(tmp_ptr);
+                        
+                        while (nleft > 0) {
+                            nwritten = write(fd[1], tmp_ptr, nleft);
+                            if (nwritten <= 0) return -1;  
+                            nleft -= nwritten;
+                            tmp_ptr += nwritten;
+                        }
+                        close (fd[0]); close(fd[1]); // fechar as ligações deste nó e abandonar
+                        fd[0]=-1; fd[1]=-1;
+                        freeaddrinfo(res_tcp);
+                        close(fd_tcp);
+                        printf("Nó %s saiu do anel\n", j);
+                        exit(0);
+
+                    }
+                    else if(modo==4) // exit: libertar memória e fechar ligações correspondeste a este nó
+                    {
+                        close (fd[0]); close(fd[1]);
+                        fd[0]=-1; fd[1]=-1;
+                        freeaddrinfo(res_tcp);
+                        close(fd_tcp);
+                        printf("EXITED PROGRAM\n");
+                        exit(0);
+                    }
+
+
+                }
+
+                else if (FD_ISSET(fd_tcp, &fds)) {
+
+                    char buffer[200] = {0};  
+                    int newfd = accept(fd_tcp, (struct sockaddr*) &addr, &addrlen); //nova socket
+                    if (newfd == -1) exit(0);
+
+                    if (read_TCP(newfd, buffer) == 0) continue;
+                    char pack[200];
+
+                    if (strncmp(buffer, "SELF ", 5) == 0) /* recebeu self */
+                    {
+
+                        char j_temp[3];
+                        char IP_temp[128];
+                        char PORT_temp[6];
+                        sscanf(buffer, "%*[^ ] %s %s %s\n", j_temp, IP_temp, PORT_temp);
+                        if ((strcmp(j_suc, j) != 0 || strcmp(j_pred, j) == 0) //caso de nao ser necessario enviar PRED de novo, trata-se do ultimo self ou do leave
+                        && !(fd[0] == -1 && fd[1] != -1)) {
+
+                            sprintf(pack, "PRED %s %s %s\n", j_temp, IP_temp, PORT_temp);
+
+                            //Criar ligação temporária para o próprio nó apenas caso esteja sozinho no anel
+                            if (strcmp(j_suc, j) == 0) {
+
+                                int tcp = criaTCP(IP_suc, PORT_suc);
+                                //enviar pack na socket criada
+                                ssize_t nleft, nwritten;
+                                nleft = (ssize_t) strlen(pack);
+
+                                char* tmp_ptr = pack;
+                                while (nleft > 0) {
+                                    nwritten = write(tcp, tmp_ptr, nleft);
+                                    if (nwritten <= 0) return -1;
+                                    nleft -= nwritten;
+                                    tmp_ptr += nwritten;
+                                }
+
+                                close(tcp);
+
+                            } else {  // Não estamos sozinhos, em vez de nós próprios contactamos logo o sucessor
+
+                                ssize_t nleft, nwritten;
+                                nleft = (ssize_t) strlen(pack);
+
+                                char* tmp_ptr = pack;
+                                while (nleft > 0) {
+                                    nwritten = write(fd[1], tmp_ptr, nleft);
+                                    if (nwritten <= 0) return -1;  
+                                    nleft -= nwritten;
+                                    tmp_ptr += nwritten;
+                                }
+
+                                close(fd[1]); fd[1]=-1; 
+                            }
+
+                        }
+
+                        strcpy(j_suc, j_temp);
+                        strcpy(IP_suc, IP_temp);
+                        strcpy(PORT_suc, PORT_temp);
+                        
+                        if (fd[0] == -1 && fd[1] != -1){ // não temos sucessor, sozinhos no anel, fechar ligação com o sucessor
+                            close(fd[1]); fd[1]=-1;
+                        } 
+
+                        if (strcmp(j_suc, j) != 0) fd[1]= newfd; //atualizar fd do sucessor 
+
+                    }
+                    /* pred */
+                    if (strncmp(buffer, "PRED ", 5) == 0)
+                    {
+                    sscanf(buffer, "%*[^ ] %s %s %s\n", j_pred, IP_pred, PORT_pred);
+
+                    sprintf(pack, "SELF %s %s %s\n", j, IP, PORT);
+
+                    int tcp = criaTCP(IP_pred, PORT_pred); // Contactar predecessor para este poder atualizar o seu sucessor
+
+                    ssize_t nleft, nwritten;
+                    nleft = (ssize_t) strlen(pack);
+
+                    char* tmp_ptr = pack;
+                    while (nleft > 0) {
+                        nwritten = write(tcp, tmp_ptr, nleft);
+                        if (nwritten <= 0) return -1;  
+                        nleft -= nwritten;
+                        tmp_ptr += nwritten;
+                    }
+
+                    if (strcmp(j_pred, j) != 0) { // caso de ter nao ter sido PRED para ele próprio, fechar ligação e colocar a nova
+                        close(fd[0]);
+                        fd[0] = tcp;
+                    } else {
+                        close(fd[0]); fd[0]= -1; // pred para ele próprio, pred em -1
+                    }
+                    }
+
+                }
+                else if (FD_ISSET(fd[1], &fds)) {
+
+                    char buffer[200] = {0};  
+
+                    if (read_TCP(fd[1], buffer) == 0) continue;
+
+                    char pack[200];
+
+                    if (strncmp(buffer, "SELF ", 5) == 0) /* self: procedimento igual ao anterior */
+                    {
+                        char j_temp[3];
+                        char IP_temp[128];
+                        char PORT_temp[6];
+                        sscanf(buffer, "%*[^ ] %s %s %s\n", j_temp, IP_temp, PORT_temp);
+                        if ((strcmp(j_suc, j) != 0 || strcmp(j_pred, j) == 0)&& !(fd[0] == -1 && fd[1] != -1))
+                        {
+                            
+                            sprintf(pack, "PRED %s %s %s\n", j_temp, IP_temp, PORT_temp);
+
+                            if (strcmp(j_suc, j) == 0) {
+
+                                int tcp = criaTCP(IP_suc, PORT_suc);
+
+                                ssize_t nleft, nwritten;
+                                nleft = (ssize_t) strlen(pack);
+
+                                char* tmp_ptr = pack;
+                                while (nleft > 0) {
+                                    nwritten = write(tcp, tmp_ptr, nleft);
+                                    if (nwritten <= 0) return -1;  
+                                    nleft -= nwritten;
+                                    tmp_ptr += nwritten;
+                                }
+
+                                close(tcp);
+
+                            } else { 
+                                ssize_t nleft, nwritten;
+                                nleft = (ssize_t) strlen(pack);
+
+                                char* tmp_ptr = pack;
+                                while (nleft > 0) {
+                                    nwritten = write(fd[1], tmp_ptr, nleft);
+                                    if (nwritten <= 0) return -1; 
+                                    nleft -= nwritten;
+                                    tmp_ptr += nwritten;
+                                }
+
+                                close(fd[1]); fd[1]=-1;  
+                            }
+
+                        }
+
+                        strcpy(j_suc, j_temp);
+                        strcpy(IP_suc, IP_temp);
+                        strcpy(PORT_suc, PORT_temp);
+
+                        if (fd[0] == -1 && fd[1] != -1){ close(fd[1]);fd[1]=-1;}
+                        
+                    }
+                    /* pred igual ao anterior */
+                    if (strncmp(buffer, "PRED ", 5) == 0)
+                    {
+                    sscanf(buffer, "%*[^ ] %s %s %s\n", j_pred, IP_pred, PORT_pred);
+                    sprintf(pack, "SELF %s %s %s\n", j, IP, PORT);
+
+                    int tcp = criaTCP(IP_pred, PORT_pred);
+
+                    ssize_t nleft, nwritten;
+                    nleft = (ssize_t) strlen(pack);
+
+                    char* tmp_ptr = pack;
+                    while (nleft > 0) {
+                        nwritten = write(tcp, tmp_ptr, nleft);
+                        if (nwritten <= 0) return -1;  
+                        nleft -= nwritten;
+                        tmp_ptr += nwritten;
+                    }
+
+                    if (strcmp(j_pred, j) != 0) {
+                        close(fd[0]);
+                        fd[0] = tcp;
+                    } else {
+                        close(fd[0]); fd[0]= -1;
+                    }
+                    }
+                } else if (FD_ISSET(fd[0], &fds)) {
+
+                    char buffer[200] = {0};  
+
+                    if (read_TCP(fd[0], buffer) == 0) continue;
+                    char pack[200];
+
+                    if (strncmp(buffer, "SELF ", 5) == 0) /* self, procedimento igual aos anteriores */
+                    {
+
+                        char j_temp[3];
+                        char IP_temp[128];
+                        char PORT_temp[6];
+                        sscanf(buffer, "%*[^ ] %s %s %s\n", j_temp, IP_temp, PORT_temp);
+                        if ((strcmp(j_suc, j) != 0 || strcmp(j_pred, j) == 0)&& !(fd[0] == -1 && fd[1] != -1))
+                        {
+
+                            sprintf(pack, "PRED %s %s %s\n", j_temp, IP_temp, PORT_temp);
+
+                            if (strcmp(j_suc, j) == 0) {
+
+                                int tcp = criaTCP(IP_suc, PORT_suc);
+                                ssize_t nleft, nwritten;
+                                nleft = (ssize_t) strlen(pack);
+
+                                char* tmp_ptr = pack;
+                                while (nleft > 0) {
+                                    nwritten = write(tcp, tmp_ptr, nleft);
+                                    if (nwritten <= 0) return -1;  
+                                    nleft -= nwritten;
+                                    tmp_ptr += nwritten;
+                                }
+
+                                close(tcp);
+
+                            } else {  
+                                ssize_t nleft, nwritten;
+                                nleft = (ssize_t) strlen(pack);
+
+                                char* tmp_ptr = pack;
+                                while (nleft > 0) {
+                                    nwritten = write(fd[1], tmp_ptr, nleft);
+                                    if (nwritten <= 0) return -1;  
+                                    nleft -= nwritten;
+                                    tmp_ptr += nwritten;
+                                }
+
+                                close(fd[1]); fd[1]=-1;  
+                            }
+
+                        }
+
+                        strcpy(j_suc, j_temp);
+                        strcpy(IP_suc, IP_temp);
+                        strcpy(PORT_suc, PORT_temp);
+
+                        if (fd[0] == -1 && fd[1] != -1){
+                            close(fd[1]); fd[1]=-1;
+                        }
+
+                        if (strcmp(j_suc, j) != 0) 
+                        {
+                            fd[1]= fd[0];
+                        }
+                    }
+                    /* pred: procedimento igual aos anteriores*/
+                    if (strncmp(buffer, "PRED ", 5) == 0) 
+                    {
+                    sscanf(buffer, "%*[^ ] %s %s %s\n", j_pred, IP_pred, PORT_pred);
+
+                    sprintf(pack, "SELF %s %s %s\n", j, IP, PORT);
+
+                    int tcp = criaTCP(IP_pred, PORT_pred);
+
+                    ssize_t nleft, nwritten;
+                    nleft = (ssize_t) strlen(pack);
+
+                    char* tmp_ptr = pack;
+                    while (nleft > 0) {
+                        nwritten = write(tcp, tmp_ptr, nleft);
+                        if (nwritten <= 0) return -1;  
+                        nleft -= nwritten;
+                        tmp_ptr += nwritten;
+                    }
+
+                    if (strcmp(j_pred, j) != 0) {
+                        close(fd[0]);
+                        fd[0] = tcp;
+                    } else {
+                        close(fd[0]); fd[0]= -1;
+                    }
+                    }
+
+                }
+                    else {
+                    exit(0);
+                }
+
+        }
+
+    }
+
+
+}
